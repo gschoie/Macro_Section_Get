@@ -135,6 +135,18 @@ def send_photo(path: Path, caption: str) -> None:
     )
 
 
+def format_run_header(now: datetime) -> str:
+    weekdays = ["\uc6d4", "\ud654", "\uc218", "\ubaa9", "\uae08", "\ud1a0", "\uc77c"]
+    day = weekdays[now.weekday()]
+    date_text = now.strftime("%y.%m.%d")
+    time_text = f"{now.hour}:{now.minute:02d}"
+    return (
+        "==============================\n"
+        f"{date_text}({day}) {time_text} \uc5c5\ub370\uc774\ud2b8\uc785\ub2c8\ub2e4\n"
+        "=============================="
+    )
+
+
 def normalize_space(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
@@ -260,12 +272,15 @@ def format_article_message(section: Section, articles: list[dict[str, str]], che
 
 def run_once() -> int:
     OUTPUT_DIR.mkdir(exist_ok=True)
-    checked_at = datetime.now(KST).strftime("%Y-%m-%d %H:%M")
-    stamp = datetime.now(KST).strftime("%Y%m%d_%H%M%S")
+    now_kst = datetime.now(KST)
+    checked_at = now_kst.strftime("%Y-%m-%d %H:%M")
+    stamp = now_kst.strftime("%Y%m%d_%H%M%S")
     limit = int(os.getenv("MACRO_ARTICLE_LIMIT", "15"))
     width = int(os.getenv("MACRO_VIEWPORT_WIDTH", "1440"))
     height = int(os.getenv("MACRO_VIEWPORT_HEIGHT", "1800"))
     headless = os.getenv("MACRO_HEADLESS", "true").lower() != "false"
+
+    send_message(format_run_header(now_kst))
 
     with sync_playwright() as playwright:
         browser: Browser = playwright.chromium.launch(headless=headless)

@@ -30,6 +30,8 @@ The cloud schedule is defined at the repository root:
 .github/workflows/macro-section-bot.yml
 ```
 
+The scheduled runs are 07:30, 10:30, 15:00, and 21:00 KST.
+
 Add these GitHub repository secrets:
 
 - `MACRO_TELEGRAM_BOT_TOKEN`
