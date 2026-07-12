@@ -46,10 +46,10 @@ Windows 작업 스케줄러에서는 `run_macro_section_bot.ps1`을 매시간 �
 
 ## GitHub Actions
 
-`.github/workflows/macro-section-bot.yml`이 매시간 실행한다. repo secrets에 다음을 등록해야 한다:
+`.github/workflows/macro-section-bot.yml`이 매시간 실행한다. repo secrets에 다음을 등록해야 한다(워크플로우가 봇의 범용 env명으로 매핑함):
 
-- `TELEGRAM_BOT_TOKEN`
-- `TELEGRAM_CHAT_ID`
+- `MACRO_TELEGRAM_BOT_TOKEN`
+- `MACRO_TELEGRAM_CHAT_ID`
 
 ## 옵션 (환경변수)
 

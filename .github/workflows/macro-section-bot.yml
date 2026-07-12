@@ -39,8 +39,9 @@ jobs:
 
       - name: Run bot (once)
         env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # 이 repo의 secret 이름은 MACRO_ 접두 → 봇이 읽는 범용 env명으로 매핑
+          TELEGRAM_BOT_TOKEN: ${{ secrets.MACRO_TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.MACRO_TELEGRAM_CHAT_ID }}
           RUN_MODE: once
           MACRO_ARTICLE_LIMIT: "5"
           MACRO_DETECT_TOP_N: "2"
