@@ -1,5 +1,7 @@
 import argparse
+import hashlib
 import html
+import json
 import mimetypes
 import os
 import re
@@ -20,12 +22,17 @@ from playwright.sync_api import Browser, Page, TimeoutError as PlaywrightTimeout
 KST = timezone(timedelta(hours=9), name="KST")
 BASE_DIR = Path(__file__).resolve().parent
 OUTPUT_DIR = BASE_DIR / "macro_section_captures"
+STATE_PATH = BASE_DIR / "macro_section_state.json"
 
 
 @dataclass(frozen=True)
 class Section:
     name: str
     url: str
+    limit: int | None = None  # None이면 전역 MACRO_ARTICLE_LIMIT 사용
+    # 특정 사이트(네이버 등)는 CSS 셀렉터로 기사 링크를 직접 잡는다.
+    # 지정되면 기하학적 추출 대신 이 셀렉터의 DOM 순서를 사용.
+    list_selector: str | None = None
 
 
 SECTIONS = [
@@ -33,6 +40,13 @@ SECTIONS = [
     Section("Maeil Business index", "https://www.mk.co.kr/news/economy/business-index"),
     Section("Hankyung macro", "https://www.hankyung.com/economy/macro"),
     Section("Yonhap economy", "https://www.yna.co.kr/economy/all"),
+    Section("Naver economy", "https://news.naver.com/section/101", limit=5, list_selector="a.sa_text_title"),
+    Section(
+        "Naver global economy",
+        "https://news.naver.com/breakingnews/section/101/262",
+        limit=5,
+        list_selector="a.sa_text_title",
+    ),
 ]
 
 
@@ -136,13 +150,13 @@ def send_photo(path: Path, caption: str) -> None:
 
 
 def format_run_header(now: datetime) -> str:
-    weekdays = ["\uc6d4", "\ud654", "\uc218", "\ubaa9", "\uae08", "\ud1a0", "\uc77c"]
+    weekdays = ["월", "화", "수", "목", "금", "토", "일"]
     day = weekdays[now.weekday()]
     date_text = now.strftime("%y.%m.%d")
     time_text = f"{now.hour}:{now.minute:02d}"
     return (
         "==============================\n"
-        f"{date_text}({day}) {time_text} \uc5c5\ub370\uc774\ud2b8\uc785\ub2c8\ub2e4\n"
+        f"{date_text}({day}) {time_text} 업데이트입니다\n"
         "=============================="
     )
 
@@ -198,12 +212,28 @@ def prepare_page(page: Page, section: Section) -> None:
     page.evaluate(
         """
         () => {
+          // Ad/overlay removal. Use token/prefix matching so substrings like
+          // "headline"/"header" (which contain "ad") are NOT removed by accident.
           for (const selector of [
             'iframe',
-            '[id*="ad"]',
-            '[class*="ad"]',
+            '[class~="ad"]',
+            '[class~="ads"]',
+            '[class~="advertisement"]',
+            '[class*="advert"]',
+            '[class*="-ad-"]',
+            '[class*="_ad_"]',
+            '[class^="ad-"]',
+            '[class^="ad_"]',
+            '[class$="-ad"]',
+            '[class$="_ad"]',
+            '[class*="banner"]',
+            '[id*="advert"]',
+            '[id*="banner"]',
+            '[id^="ad-"]',
+            '[id^="ad_"]',
+            '[id~="ad"]',
             '[class*="popup"]',
-            '[class*="layer"]',
+            '[class~="layer"]',
             '[class*="cookie"]'
           ]) {
             document.querySelectorAll(selector).forEach((node) => node.remove());
@@ -213,19 +243,71 @@ def prepare_page(page: Page, section: Section) -> None:
     )
 
 
+def _first_line_title_js() -> str:
+    # Title = first non-empty line; if too short (category badge like "방산"),
+    # append the next line.
+    return (
+        "const lines = (anchor.innerText || anchor.textContent || '')"
+        ".split('\\n').map((s) => s.trim()).filter(Boolean);"
+        "let title = lines[0] || '';"
+        "if (title.length < 8 && lines.length > 1) { title = (title + ' ' + lines[1]).trim(); }"
+    )
+
+
 def extract_articles(page: Page, section: Section, limit: int) -> list[dict[str, str]]:
+    if section.list_selector:
+        # 사이트 전용 셀렉터: DOM 순서를 그대로 사용(정렬하지 않음).
+        raw_items = page.evaluate(
+            """
+            (selector) => Array.from(document.querySelectorAll(selector)).map((anchor) => {
+              %s
+              return { title: title, href: anchor.getAttribute('href') || '' };
+            })
+            """
+            % _first_line_title_js(),
+            section.list_selector,
+        )
+        candidates = []
+        for item in raw_items:
+            title = normalize_space(str(item.get("title", "")))
+            href = str(item.get("href", "")).strip()
+            if not looks_like_article(title, href):
+                continue
+            candidates.append({"title": title, "url": absolute_url(section.url, href)})
+        return unique_articles(candidates, limit)
+
+    # 기본: 화면에 보이는 본문(왼쪽) 열의 링크만 위치 순으로 추출.
+    # 오른쪽 사이드바("많이 본 뉴스"/"베스트 클릭")와 숨겨진 링크를 제거한다.
+    main_col_ratio = float(os.getenv("MACRO_MAIN_COLUMN_RATIO", "0.66"))
     raw_items = page.evaluate(
         """
-        () => Array.from(document.querySelectorAll('a[href]')).map((anchor) => {
-          const rect = anchor.getBoundingClientRect();
-          return {
-            title: anchor.innerText || anchor.textContent || '',
-            href: anchor.getAttribute('href') || '',
-            top: rect.top + window.scrollY,
-            left: rect.left + window.scrollX
-          };
-        })
+        (ratio) => {
+          const maxLeft = window.innerWidth * ratio;
+          return Array.from(document.querySelectorAll('a[href]')).map((anchor) => {
+            const rect = anchor.getBoundingClientRect();
+            const style = getComputedStyle(anchor);
+            const visible =
+              style.display !== 'none' &&
+              style.visibility !== 'hidden' &&
+              style.opacity !== '0' &&
+              rect.width > 1 &&
+              rect.height > 1;
+            %s
+            return {
+              title: title,
+              href: anchor.getAttribute('href') || '',
+              top: rect.top + window.scrollY,
+              left: rect.left + window.scrollX,
+              visible: visible,
+            };
+          }).filter(
+            (item) =>
+              item.visible && item.left >= 0 && item.top >= 0 && item.left < maxLeft
+          );
+        }
         """
+        % _first_line_title_js(),
+        main_col_ratio,
     )
     candidates = []
     for item in raw_items:
@@ -253,20 +335,48 @@ def screenshot_page(page: Page, section: Section, stamp: str) -> Path:
     return path
 
 
-def format_article_message(section: Section, articles: list[dict[str, str]], checked_at: str) -> str:
+def fingerprint_articles(articles: list[dict[str, str]]) -> str:
+    """Stable fingerprint of the current top-N article list (URL based)."""
+    keys = [item["url"].split("#", 1)[0] for item in articles]
+    digest = hashlib.sha256("\n".join(keys).encode("utf-8"))
+    return digest.hexdigest()
+
+
+def load_state() -> dict:
+    if not STATE_PATH.exists():
+        return {}
+    try:
+        data = json.loads(STATE_PATH.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (ValueError, OSError):
+        return {}
+
+
+def save_state(state: dict) -> None:
+    STATE_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def format_article_message(
+    section: Section,
+    articles: list[dict[str, str]],
+    checked_at: str,
+    changed: bool,
+) -> str:
     lines = [
         f"<b>{html.escape(section.name)}</b>",
         f"Checked: {html.escape(checked_at)} KST",
         f"Section: {html.escape(section.url)}",
-        "",
     ]
+    if not changed:
+        lines.append("🔁 새로운 뉴스 없음 (상단 기사 동일)")
+    lines.append("")
     if not articles:
         lines.append("No article titles were extracted. Please check the screenshot.")
     else:
         for index, item in enumerate(articles, start=1):
             title = html.escape(item["title"])
             url = html.escape(item["url"])
-            lines.append(f"{index}. <a href=\"{url}\">{title}</a>")
+            lines.append(f'{index}. <a href="{url}">{title}</a>')
     return "\n".join(lines)
 
 
@@ -275,11 +385,13 @@ def run_once() -> int:
     now_kst = datetime.now(KST)
     checked_at = now_kst.strftime("%Y-%m-%d %H:%M")
     stamp = now_kst.strftime("%Y%m%d_%H%M%S")
-    limit = int(os.getenv("MACRO_ARTICLE_LIMIT", "15"))
+    limit = int(os.getenv("MACRO_ARTICLE_LIMIT", "5"))
+    detect_n = int(os.getenv("MACRO_DETECT_TOP_N", "2"))
     width = int(os.getenv("MACRO_VIEWPORT_WIDTH", "1440"))
     height = int(os.getenv("MACRO_VIEWPORT_HEIGHT", "1800"))
     headless = os.getenv("MACRO_HEADLESS", "true").lower() != "false"
 
+    state = load_state()
     send_message(format_run_header(now_kst))
 
     with sync_playwright() as playwright:
@@ -299,12 +411,26 @@ def run_once() -> int:
                 page = context.new_page()
                 try:
                     prepare_page(page, section)
-                    articles = extract_articles(page, section, limit)
-                    screenshot = screenshot_page(page, section, stamp)
-                    caption = f"<b>{html.escape(section.name)}</b>\n{html.escape(checked_at)} KST"
-                    send_photo(screenshot, caption)
-                    send_message(format_article_message(section, articles, checked_at))
-                    print(f"Sent {section.name}: {len(articles)} article(s)", flush=True)
+                    articles = extract_articles(page, section, section.limit or limit)
+
+                    # Change is judged only on the top-N articles (default 2),
+                    # even though up to `limit` articles are shown in the message.
+                    fingerprint = fingerprint_articles(articles[:detect_n])
+                    previous = state.get(section.name, {}).get("fingerprint")
+                    # No articles => force a screenshot so the reader can verify.
+                    changed = (fingerprint != previous) or not articles
+
+                    if changed:
+                        screenshot = screenshot_page(page, section, stamp)
+                        caption = f"<b>{html.escape(section.name)}</b>\n{html.escape(checked_at)} KST"
+                        send_photo(screenshot, caption)
+                        send_message(format_article_message(section, articles, checked_at, changed=True))
+                        print(f"Sent {section.name}: {len(articles)} article(s) [changed]", flush=True)
+                    else:
+                        send_message(format_article_message(section, articles, checked_at, changed=False))
+                        print(f"Sent {section.name}: no change (screenshot skipped)", flush=True)
+
+                    state[section.name] = {"fingerprint": fingerprint, "checked_at": checked_at}
                 except Exception as exc:
                     message = f"<b>{html.escape(section.name)}</b>\nFailed: {html.escape(str(exc))}"
                     print(message, file=sys.stderr, flush=True)
@@ -312,6 +438,7 @@ def run_once() -> int:
                         send_message(message)
                 finally:
                     page.close()
+            save_state(state)
         finally:
             browser.close()
     return 0

@@ -1,49 +1,48 @@
 name: Macro Section Bot
 
 on:
-  workflow_dispatch:
   schedule:
-    # KST: 07:30, 10:30, 15:00, 21:00
-    - cron: "30 22,1 * * *"
-    - cron: "0 6,12 * * *"
-
-permissions:
-  contents: read
+    # 매시간 정각(UTC) 실행. GitHub 부하에 따라 수 분 지연될 수 있음.
+    - cron: "0 * * * *"
+  workflow_dispatch: {}
 
 concurrency:
   group: macro-section-bot
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
-  run-bot:
+  run:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-          cache: pip
+          python-version: "3.11"
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
           pip install -r requirements.txt
           python -m playwright install --with-deps chromium
 
-      - name: Run macro section bot
+      # 변경 감지 상태를 실행 간 유지 (없으면 매번 전부 "변경"으로 잡힘).
+      - name: Restore change-detection state
+        uses: actions/cache@v4
+        with:
+          path: macro_section_state.json
+          key: macro-state-${{ github.run_id }}
+          restore-keys: |
+            macro-state-
+
+      - name: Run bot (once)
         env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.MACRO_TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.MACRO_TELEGRAM_CHAT_ID }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           RUN_MODE: once
-          TELEGRAM_NOTIFY_ERRORS: true
-          MACRO_ARTICLE_LIMIT: 15
-          MACRO_VIEWPORT_WIDTH: 1440
-          MACRO_VIEWPORT_HEIGHT: 1800
-          MACRO_FULL_PAGE_SCREENSHOT: false
-          MACRO_HEADLESS: true
+          MACRO_ARTICLE_LIMIT: "5"
+          MACRO_DETECT_TOP_N: "2"
+          TELEGRAM_NOTIFY_ERRORS: "false"
         run: python macro_section_telegram_bot.py --once
