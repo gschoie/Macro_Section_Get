@@ -17,10 +17,10 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
@@ -31,7 +31,7 @@ jobs:
 
       # 변경 감지 상태를 실행 간 유지 (없으면 매번 전부 "변경"으로 잡힘).
       - name: Restore change-detection state
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: macro_section_state.json
           key: macro-state-${{ github.run_id }}
