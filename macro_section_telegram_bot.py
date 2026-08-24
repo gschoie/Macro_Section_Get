@@ -35,11 +35,8 @@ class Section:
     list_selector: str | None = None
 
 
+# 회전(--rotate) 발송 순서이기도 하다: 10분 간격으로 위에서부터 한 섹션씩.
 SECTIONS = [
-    Section("Infomax macro", "https://news.einfomax.co.kr/news/articleList.html?sc_section_code=S1N16&view_type=sm"),
-    Section("Maeil Business index", "https://www.mk.co.kr/news/economy/business-index"),
-    Section("Hankyung macro", "https://www.hankyung.com/economy/macro"),
-    Section("Yonhap economy", "https://www.yna.co.kr/economy/all"),
     Section("Naver economy", "https://news.naver.com/section/101", limit=5, list_selector="a.sa_text_title"),
     Section(
         "Naver global economy",
@@ -47,6 +44,10 @@ SECTIONS = [
         limit=5,
         list_selector="a.sa_text_title",
     ),
+    Section("Infomax macro", "https://news.einfomax.co.kr/news/articleList.html?sc_section_code=S1N16&view_type=sm"),
+    Section("Yonhap economy", "https://www.yna.co.kr/economy/all"),
+    Section("Maeil Business index", "https://www.mk.co.kr/news/economy/business-index"),
+    Section("Hankyung macro", "https://www.hankyung.com/economy/macro"),
 ]
 
 
@@ -380,7 +381,8 @@ def format_article_message(
     return "\n".join(lines)
 
 
-def run_once() -> int:
+def run_once(sections: list[Section] | None = None, send_header: bool = True,
+             advance_rotation: bool = False) -> int:
     OUTPUT_DIR.mkdir(exist_ok=True)
     now_kst = datetime.now(KST)
     checked_at = now_kst.strftime("%Y-%m-%d %H:%M")
@@ -392,7 +394,9 @@ def run_once() -> int:
     headless = os.getenv("MACRO_HEADLESS", "true").lower() != "false"
 
     state = load_state()
-    send_message(format_run_header(now_kst))
+    targets = sections if sections is not None else SECTIONS
+    if send_header:
+        send_message(format_run_header(now_kst))
 
     with sync_playwright() as playwright:
         browser: Browser = playwright.chromium.launch(headless=headless)
@@ -407,7 +411,7 @@ def run_once() -> int:
                     "Chrome/125.0.0.0 Safari/537.36"
                 ),
             )
-            for section in SECTIONS:
+            for section in targets:
                 page = context.new_page()
                 try:
                     prepare_page(page, section)
@@ -438,10 +442,23 @@ def run_once() -> int:
                         send_message(message)
                 finally:
                     page.close()
+            if advance_rotation:
+                state["_rotation"] = (int(state.get("_rotation", 0)) + len(targets)) % len(SECTIONS)
             save_state(state)
         finally:
             browser.close()
     return 0
+
+
+def run_rotation() -> int:
+    """10분 간격 크론용: 이번 차례 섹션 1개만 보낸다. 순서는 SECTIONS 정의 순.
+
+    회전 포인터는 변경감지 상태 파일(macro_section_state.json)에 함께 저장되어
+    Actions 캐시로 유지된다. 헤더 메시지는 회전 시작(첫 섹션)에만 보낸다.
+    크론이 유실되면 그 섹션은 다음 틱으로 밀릴 뿐 순서는 꼬이지 않는다.
+    """
+    idx = int(load_state().get("_rotation", 0)) % len(SECTIONS)
+    return run_once(sections=[SECTIONS[idx]], send_header=(idx == 0), advance_rotation=True)
 
 
 def sleep_until_next_hour() -> None:
@@ -453,12 +470,17 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Capture macro news sections and send them to Telegram.")
     parser.add_argument("--once", action="store_true", help="Run one check and exit.")
     parser.add_argument("--loop", action="store_true", help="Run every hour.")
+    parser.add_argument("--rotate", action="store_true",
+                        help="Send only the next section in rotation (for 10-minute staggered crons).")
     args = parser.parse_args()
 
     load_dotenv(BASE_DIR / ".env")
     loop = args.loop or os.getenv("RUN_MODE", "once").lower() == "loop"
     if args.once:
         loop = False
+
+    if args.rotate or os.getenv("RUN_MODE", "").lower() == "rotate":
+        return run_rotation()
 
     while True:
         try:
