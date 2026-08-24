@@ -444,6 +444,7 @@ def run_once(sections: list[Section] | None = None, send_header: bool = True,
                     page.close()
             if advance_rotation:
                 state["_rotation"] = (int(state.get("_rotation", 0)) + len(targets)) % len(SECTIONS)
+                state["_last_rotate_ts"] = time.time()
             save_state(state)
         finally:
             browser.close()
@@ -454,11 +455,22 @@ def run_rotation() -> int:
     """10분 간격 크론용: 이번 차례 섹션 1개만 보낸다. 순서는 SECTIONS 정의 순.
 
     회전 포인터는 변경감지 상태 파일(macro_section_state.json)에 함께 저장되어
-    Actions 캐시로 유지된다. 헤더 메시지는 회전 시작(첫 섹션)에만 보낸다.
-    크론이 유실되면 그 섹션은 다음 틱으로 밀릴 뿐 순서는 꼬이지 않는다.
+    Actions 캐시로 유지된다.
+
+    슬롯 시작 판정은 포인터가 아니라 '직전 회전 실행과의 시간 공백'으로 한다
+    (슬롯 간격은 3시간+, 슬롯 안 틱은 10분이라 30분이 확실한 경계).
+    새 슬롯이면 포인터를 0으로 되돌려 항상 네이버 경제부터 + 헤더를 보낸다 —
+    이전 슬롯에서 크론 틱이 유실돼 포인터가 밀려 있어도 여기서 자동 복구된다.
     """
-    idx = int(load_state().get("_rotation", 0)) % len(SECTIONS)
-    return run_once(sections=[SECTIONS[idx]], send_header=(idx == 0), advance_rotation=True)
+    state = load_state()
+    now_ts = time.time()
+    last_ts = float(state.get("_last_rotate_ts", 0))
+    new_slot = (now_ts - last_ts) > 1800
+    idx = 0 if new_slot else int(state.get("_rotation", 0)) % len(SECTIONS)
+    if new_slot and int(state.get("_rotation", 0)) != 0:
+        state["_rotation"] = 0
+        save_state(state)
+    return run_once(sections=[SECTIONS[idx]], send_header=new_slot, advance_rotation=True)
 
 
 def sleep_until_next_hour() -> None:
