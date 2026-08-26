@@ -13,6 +13,7 @@ on:
   workflow_dispatch: {}
 
 # 크론 지연으로 두 틱이 겹치면 뒤 run이 줄을 선다(취소 아님) — 상태 파일 경합 방지.
+# (2026-08-26: 크론 재등록 강제용 무해 커밋 — public 전환 후 6틱 스케줄이 미등록 상태였음)
 concurrency:
   group: macro-section-bot
   cancel-in-progress: false
