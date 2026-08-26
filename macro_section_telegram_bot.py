@@ -473,6 +473,41 @@ def run_rotation() -> int:
     return run_once(sections=[SECTIONS[idx]], send_header=new_slot, advance_rotation=True)
 
 
+def run_serve_slot() -> int:
+    """슬롯당 1회 실행용: 러너 잡 안에서 10분씩 쉬며 6개 섹션을 차례로 발송.
+
+    GitHub 무료 러너는 10분 간격 크론 틱을 대부분 유실/지연시켜(실측: 슬롯당
+    6틱 중 1~2틱만 발화, 발화 간격 30~55분) --rotate 방식으로는 10분 간격을
+    지킬 수 없다. 대신 슬롯 시작 틱 1개만 받아 잡 안에서 sleep으로 간격을
+    보장한다. public 리포는 러너 시간이 무제한이라 비용이 없다.
+
+    같은 슬롯의 폴백 틱(시작 틱 유실 대비)이 겹치면 최근 서빙 시각(90분 이내)
+    으로 중복을 걸러낸다 — 슬롯 길이(~55분) < 90분 < 슬롯 간격(3.5시간+).
+    """
+    state = load_state()
+    now_ts = time.time()
+    last_ts = float(state.get("_last_serve_ts", 0))
+    if (now_ts - last_ts) < 5400:
+        print("Slot already served recently; skipping (fallback tick).", flush=True)
+        return 0
+    state["_last_serve_ts"] = now_ts
+    save_state(state)
+
+    interval = int(os.getenv("MACRO_SERVE_INTERVAL_SEC", "600"))
+    next_at = time.monotonic()
+    for i, section in enumerate(SECTIONS):
+        try:
+            run_once(sections=[section], send_header=(i == 0), advance_rotation=False)
+        except Exception as exc:  # 한 섹션이 죽어도 나머지 섹션은 계속 보낸다
+            print(f"Serve-slot section failed ({section.name}): {exc}", file=sys.stderr, flush=True)
+        if i < len(SECTIONS) - 1:
+            next_at += interval
+            delay = next_at - time.monotonic()
+            if delay > 0:
+                time.sleep(delay)
+    return 0
+
+
 def sleep_until_next_hour() -> None:
     now = time.time()
     time.sleep(3600 - (int(now) % 3600))
@@ -484,12 +519,17 @@ def main() -> int:
     parser.add_argument("--loop", action="store_true", help="Run every hour.")
     parser.add_argument("--rotate", action="store_true",
                         help="Send only the next section in rotation (for 10-minute staggered crons).")
+    parser.add_argument("--serve-slot", action="store_true",
+                        help="Send all sections 10 minutes apart within one job (for one cron tick per slot).")
     args = parser.parse_args()
 
     load_dotenv(BASE_DIR / ".env")
     loop = args.loop or os.getenv("RUN_MODE", "once").lower() == "loop"
     if args.once:
         loop = False
+
+    if args.serve_slot or os.getenv("RUN_MODE", "").lower() == "serve-slot":
+        return run_serve_slot()
 
     if args.rotate or os.getenv("RUN_MODE", "").lower() == "rotate":
         return run_rotation()

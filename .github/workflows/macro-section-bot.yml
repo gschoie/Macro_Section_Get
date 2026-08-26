@@ -2,18 +2,19 @@ name: Macro Section Bot
 
 on:
   schedule:
-    # 슬롯(KST 07:00 / 10:30 / 15:00 / 21:00)마다 10분 간격으로 6번 깨어나,
-    # 회전(--rotate)으로 섹션을 1개씩 보낸다 — 6연발 대신 10분에 하나씩.
-    # UTC = KST-9h. GitHub 크론은 수 분 지연될 수 있음(순서는 상태 포인터가 보존).
-    - cron: "0,10,20,30,40,50 22 * * *"   # KST 07:00~07:50
-    - cron: "30,40,50 1 * * *"            # KST 10:30~10:50
-    - cron: "0,10,20 2 * * *"             # KST 11:00~11:20
-    - cron: "0,10,20,30,40,50 6 * * *"    # KST 15:00~15:50
-    - cron: "0,10,20,30,40,50 12 * * *"   # KST 21:00~21:50
+    # 슬롯(KST 07:00 / 10:30 / 15:00 / 21:00)마다 시작 틱 1개 + 폴백 틱 1개.
+    # 잡이 --serve-slot 으로 6개 섹션을 잡 안에서 10분 간격 순차 발송한다.
+    # (10분 간격 6틱 크론은 GitHub 무료 러너 스로틀로 슬롯당 1~2틱만 발화 — 실측 후 전환)
+    # 폴백 틱은 시작 틱이 유실됐을 때만 실제로 돌고, 아니면 90분 중복 가드로 즉시 종료.
+    # UTC = KST-9h.
+    - cron: "0,20 22 * * *"   # KST 07:00 (+폴백 07:20)
+    - cron: "30,50 1 * * *"   # KST 10:30 (+폴백 10:50)
+    - cron: "0,20 6 * * *"    # KST 15:00 (+폴백 15:20)
+    - cron: "0,20 12 * * *"   # KST 21:00 (+폴백 21:20)
   workflow_dispatch: {}
 
-# 크론 지연으로 두 틱이 겹치면 뒤 run이 줄을 선다(취소 아님) — 상태 파일 경합 방지.
-# (2026-08-26: 크론 재등록 강제용 무해 커밋 — public 전환 후 6틱 스케줄이 미등록 상태였음)
+# 폴백 틱이 서빙 중인 잡과 겹치면 뒤 run이 줄을 선다(취소 아님) — 상태 파일 경합 방지.
+# 줄을 선 폴백은 서빙 완료 후 시작돼 90분 가드에 걸려 즉시 종료된다.
 concurrency:
   group: macro-section-bot
   cancel-in-progress: false
@@ -21,7 +22,8 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # --serve-slot 은 10분 간격 6회 발송으로 잡이 ~55분 돈다 (public 리포 = 러너 무제한).
+    timeout-minutes: 75
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -64,5 +66,5 @@ jobs:
           MACRO_ARTICLE_LIMIT: "5"
           MACRO_DETECT_TOP_N: "2"
           TELEGRAM_NOTIFY_ERRORS: "false"
-        # 스케줄 = 회전(섹션 1개), 수동 실행 = 전체 6개 한 번에(테스트용)
-        run: python macro_section_telegram_bot.py ${{ github.event_name == 'schedule' && '--rotate' || '--once' }}
+        # 스케줄 = 슬롯 서빙(헤더 + 6개 섹션 10분 간격), 수동 실행 = 전체 6개 한 번에(테스트용)
+        run: python macro_section_telegram_bot.py ${{ github.event_name == 'schedule' && '--serve-slot' || '--once' }}
