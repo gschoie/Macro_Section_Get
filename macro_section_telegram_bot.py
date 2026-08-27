@@ -473,6 +473,26 @@ def run_rotation() -> int:
     return run_once(sections=[SECTIONS[idx]], send_header=new_slot, advance_rotation=True)
 
 
+# 발송 슬롯 시작 시각(KST). 워크플로 크론·GAS 트리거(macro_slot_trigger.gs)와 맞출 것.
+SLOT_STARTS_KST = ((7, 0), (10, 30), (15, 0), (21, 0))
+
+
+def near_slot(now_kst: datetime) -> bool:
+    """지금이 어떤 슬롯의 서빙 시간대(-25분 ~ +90분)인지.
+
+    GitHub 크론이 재등록 유실 후 엉뚱한 시각에 발화하는 실측 사례(KST 02:24 야간
+    발화)가 있어, 슬롯 근처가 아니면 서빙하지 않는다. -25분은 GAS nearMinute의
+    조기 발화(±15분)+여유, +90분은 크론 지연 실측 상한. GAS·정상 크론은 항상
+    이 창 안에 들어온다.
+    """
+    for h, m in SLOT_STARTS_KST:
+        start = now_kst.replace(hour=h, minute=m, second=0, microsecond=0)
+        delta_min = (now_kst - start).total_seconds() / 60
+        if -25 <= delta_min <= 90:
+            return True
+    return False
+
+
 def run_serve_slot() -> int:
     """슬롯당 1회 실행용: 러너 잡 안에서 10분씩 쉬며 6개 섹션을 차례로 발송.
 
@@ -484,6 +504,11 @@ def run_serve_slot() -> int:
     같은 슬롯의 폴백 틱(시작 틱 유실 대비)이 겹치면 최근 서빙 시각(90분 이내)
     으로 중복을 걸러낸다 — 슬롯 길이(~55분) < 90분 < 슬롯 간격(3.5시간+).
     """
+    now_kst = datetime.now(KST)
+    if not near_slot(now_kst):
+        print(f"Off-slot firing at {now_kst:%H:%M} KST; skipping (erratic cron tick).", flush=True)
+        return 0
+
     state = load_state()
     now_ts = time.time()
     last_ts = float(state.get("_last_serve_ts", 0))
