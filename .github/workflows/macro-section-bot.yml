@@ -11,7 +11,16 @@ on:
     - cron: "30,50 1 * * *"   # KST 10:30 (+폴백 10:50)
     - cron: "0,20 6 * * *"    # KST 15:00 (+폴백 15:20)
     - cron: "0,20 12 * * *"   # KST 21:00 (+폴백 21:20)
-  workflow_dispatch: {}
+  # GAS 시간 트리거(gas/macro_slot_trigger.gs, GS-DB2 리포)가 mode=serve-slot 으로 호출한다
+  # — 이 리포의 크론이 워크플로 편집 후 재등록 유실로 슬롯을 통째로 빼먹는 문제의 우회로.
+  # 크론은 백업으로 남긴다(봇의 90분 중복 가드가 이중 발송을 걸러줌).
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "serve-slot = 슬롯 서빙(10분 간격 6개), once = 전체 6개 즉시(테스트)"
+        type: choice
+        options: [once, serve-slot]
+        default: once
 
 # 폴백 틱이 서빙 중인 잡과 겹치면 뒤 run이 줄을 선다(취소 아님) — 상태 파일 경합 방지.
 # 줄을 선 폴백은 서빙 완료 후 시작돼 90분 가드에 걸려 즉시 종료된다.
@@ -66,5 +75,5 @@ jobs:
           MACRO_ARTICLE_LIMIT: "5"
           MACRO_DETECT_TOP_N: "2"
           TELEGRAM_NOTIFY_ERRORS: "false"
-        # 스케줄 = 슬롯 서빙(헤더 + 6개 섹션 10분 간격), 수동 실행 = 전체 6개 한 번에(테스트용)
-        run: python macro_section_telegram_bot.py ${{ github.event_name == 'schedule' && '--serve-slot' || '--once' }}
+        # 스케줄·GAS(mode=serve-slot) = 슬롯 서빙(헤더 + 6개 10분 간격), 수동 기본값 = 전체 6개 한 번에(테스트용)
+        run: python macro_section_telegram_bot.py ${{ (github.event_name == 'schedule' || inputs.mode == 'serve-slot') && '--serve-slot' || '--once' }}
